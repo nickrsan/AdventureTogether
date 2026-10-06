@@ -1,0 +1,48 @@
+---
+# Security & Firewall Hardening Role
+- name: Configure UFW default incoming policy to deny
+  ufw:
+    direction: incoming
+    default: deny
+
+- name: Configure UFW default outgoing policy to allow
+  ufw:
+    direction: outgoing
+    default: allow
+
+- name: Allow SSH port through firewall
+  ufw:
+    rule: allow
+    port: '22'
+    proto: tcp
+
+- name: Allow HTTP port (80) through firewall
+  ufw:
+    rule: allow
+    port: '80'
+    proto: tcp
+
+- name: Allow HTTPS port (443) through firewall
+  ufw:
+    rule: allow
+    port: '443'
+    proto: tcp
+
+- name: Enable UFW firewall
+  ufw:
+    state: enabled
+
+- name: Configure Fail2Ban jail for SSH
+  copy:
+    dest: /etc/fail2ban/jail.local
+    content: |
+      [DEFAULT]
+      bantime = 1h
+      findtime = 10m
+      maxretry = 5
+
+      [sshd]
+      enabled = true
+      port = 22
+    mode: '0644'
+  notify: Restart Fail2Ban

@@ -1,0 +1,3 @@
+"""
+Event management application package.
+"""

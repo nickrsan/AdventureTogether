@@ -1,0 +1,3 @@
+"""
+AdventureTogether Django Project Package.
+"""

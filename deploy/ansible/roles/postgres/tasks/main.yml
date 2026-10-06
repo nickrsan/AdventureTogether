@@ -1,0 +1,36 @@
+---
+# PostgreSQL / PostGIS Backup & Datastore Management Role
+- name: Ensure backup directory exists
+  file:
+    path: /var/backups/adventuretogether
+    state: directory
+    owner: deploy
+    group: deploy
+    mode: '0700'
+
+- name: Create automated PostGIS database backup script
+  copy:
+    dest: /usr/local/bin/backup_postgis.sh
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      BACKUP_DIR="/var/backups/adventuretogether"
+      DATE=$(date +%Y%m%d_%H%M%S)
+      BACKUP_FILE="${BACKUP_DIR}/postgis_backup_${DATE}.sql.gz"
+
+      # Dump database via docker container
+      docker exec adventure_together_db pg_dump -U postgres adventure_together | gzip > "${BACKUP_FILE}"
+
+      # Remove backups older than 14 days
+      find "${BACKUP_DIR}" -type f -name "postgis_backup_*.sql.gz" -mtime +14 -delete
+    mode: '0755'
+
+- name: Schedule daily automated PostGIS backup cron job at 02:00 UTC
+  cron:
+    name: "AdventureTogether PostGIS Daily Backup"
+    minute: "0"
+    hour: "2"
+    job: "/usr/local/bin/backup_postgis.sh > /dev/null 2>&1"
+    user: root
+    state: present

@@ -1,0 +1,13 @@
+---
+- name: AdventureTogether Server Provisioning & Security Hardening
+  hosts: scavenger_servers
+  become: yes
+  vars:
+    project_dir: /opt/adventuretogether
+    docker_compose_version: "v2.24.5"
+
+  roles:
+    - role: common
+    - role: security
+    - role: postgres
+    - role: application

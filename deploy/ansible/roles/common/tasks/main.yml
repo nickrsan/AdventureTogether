@@ -1,0 +1,45 @@
+---
+# Common Server Setup Role
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Install baseline system packages and utilities
+  apt:
+    name:
+      - curl
+      - wget
+      - git
+      - htop
+      - ufw
+      - fail2ban
+      - ca-certificates
+      - gnupg
+      - lsb-release
+      - python3-pip
+      - python3-venv
+      - rsync
+    state: present
+
+- name: Create deploy group
+  group:
+    name: deploy
+    state: present
+
+- name: Create non-root deploy user
+  user:
+    name: deploy
+    group: deploy
+    shell: /bin/bash
+    home: /home/deploy
+    create_home: yes
+    state: present
+
+- name: Ensure project directory exists with proper permissions
+  file:
+    path: "{{ project_root }}"
+    state: directory
+    owner: deploy
+    group: deploy
+    mode: '0755'

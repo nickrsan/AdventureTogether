@@ -1,0 +1,3 @@
+"""
+Foreground ephemeral geolocation package.
+"""

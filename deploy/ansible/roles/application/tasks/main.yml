@@ -1,0 +1,55 @@
+---
+# Application Docker Deployment & Systemd Service Role
+- name: Install Docker and Docker Compose plugin
+  apt:
+    name:
+      - docker.io
+      - docker-compose-v2
+    state: present
+
+- name: Add deploy user to docker group
+  user:
+    name: deploy
+    groups: docker
+    append: yes
+
+- name: Copy project code to remote host
+  synchronize:
+    src: ../../../
+    dest: "{{ project_root }}/"
+    rsync_opts:
+      - "--exclude=.git"
+      - "--exclude=node_modules"
+      - "--exclude=.venv"
+      - "--exclude=__pycache__"
+
+- name: Create production systemd service for AdventureTogether Docker Compose
+  copy:
+    dest: /etc/systemd/system/adventuretogether.service
+    content: |
+      [Unit]
+      Description=AdventureTogether Docker Compose Application
+      Requires=docker.service
+      After=docker.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      WorkingDirectory={{ project_root }}/deploy
+      ExecStart=/usr/bin/docker compose up -d --build
+      ExecStop=/usr/bin/docker compose down
+      User=root
+
+      [Install]
+      WantedBy=multi-user.target
+    mode: '0644'
+
+- name: Reload systemd daemon
+  systemd:
+    daemon_reload: yes
+
+- name: Enable and start AdventureTogether application service
+  systemd:
+    name: adventuretogether
+    enabled: yes
+    state: started

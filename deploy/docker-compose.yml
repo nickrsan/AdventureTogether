@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  # Spatial Database: PostgreSQL with PostGIS extension
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: adventure_together_db
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-adventure_together}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgis_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Backend Web API: Django with GeoDjango & DRF
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: adventure_together_backend
+    restart: always
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - ../backend:/app
+    ports:
+      - "8000:8000"
+    environment:
+      DJANGO_DEBUG: "True"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-secret-key-change-in-prod}
+      DJANGO_ALLOWED_HOSTS: "*"
+      POSTGRES_DB: ${POSTGRES_DB:-adventure_together}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Background Harvester Worker: Django-Q2 ORM Broker
+  worker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: adventure_together_worker
+    restart: always
+    command: python manage.py qcluster
+    volumes:
+      - ../backend:/app
+    environment:
+      DJANGO_DEBUG: "True"
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-secret-key-change-in-prod}
+      POSTGRES_DB: ${POSTGRES_DB:-adventure_together}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Frontend Web Client: Single Vue 3 SPA with Nginx
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: adventure_together_frontend
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  postgis_data:
