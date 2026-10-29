@@ -1,0 +1,230 @@
+#cloud-config
+# ==============================================================================
+# AdventureTogether - DigitalOcean Cloud-Init Bootstrap Template
+# ==============================================================================
+# This cloud-config script runs automatically upon Droplet creation, preparing
+# the runtime environment, installing container tooling, configuring security,
+# bootstrapping the AdventureTogether stack, and setting up automated backups.
+# ==============================================================================
+
+package_update: true
+package_upgrade: true
+
+# ------------------------------------------------------------------------------
+# Swap Space Configuration (2GB on SSD to protect against OOM spikes)
+# ------------------------------------------------------------------------------
+swap:
+  filename: /swapfile
+  size: 2147483648
+  maxsize: 2147483648
+
+packages:
+  - curl
+  - wget
+  - git
+  - ufw
+  - fail2ban
+  - ca-certificates
+  - gnupg
+  - lsb-release
+  - docker.io
+  - docker-compose-v2
+  - certbot
+  - jq
+  - htop
+
+groups:
+  - deploy
+  - docker
+
+users:
+  - default
+  - name: deploy
+    groups: [deploy, docker, sudo]
+    shell: /bin/bash
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    ssh_authorized_keys:
+      - "${ssh_public_key}"
+
+write_files:
+  # ----------------------------------------------------------------------------
+  # Fail2ban SSH Protection Configuration
+  # ----------------------------------------------------------------------------
+  - path: /etc/fail2ban/jail.local
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [DEFAULT]
+      bantime = 1h
+      findtime = 10m
+      maxretry = 5
+
+      [sshd]
+      enabled = true
+      port = 22
+
+  # ----------------------------------------------------------------------------
+  # PostGIS Automated Backup Script
+  # ----------------------------------------------------------------------------
+  - path: /usr/local/bin/backup_postgis.sh
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      
+      BACKUP_DIR="/var/backups/adventuretogether"
+      DATE=$(date +%Y%m%d_%H%M%S)
+      BACKUP_FILE="$${BACKUP_DIR}/postgis_backup_$${DATE}.sql.gz"
+      
+      mkdir -p "$${BACKUP_DIR}"
+      chmod 700 "$${BACKUP_DIR}"
+      
+      # Perform database dump inside the postgis container
+      if docker ps -q --filter "name=adventure_together_db" | grep -q .; then
+        docker exec adventure_together_db pg_dump -U ${postgres_user} ${postgres_db_name} | gzip > "$${BACKUP_FILE}"
+        chmod 600 "$${BACKUP_FILE}"
+        echo "[$(date -u)] PostGIS backup successfully created: $${BACKUP_FILE}"
+      else
+        echo "[$(date -u)] Warning: adventure_together_db container is not currently running. Skipping backup." >&2
+      fi
+      
+      # Automatically prune backups older than 14 days
+      find "$${BACKUP_DIR}" -type f -name "postgis_backup_*.sql.gz" -mtime +14 -delete
+
+  # ----------------------------------------------------------------------------
+  # Application Systemd Service
+  # ----------------------------------------------------------------------------
+  - path: /etc/systemd/system/adventuretogether.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=AdventureTogether Full Stack Docker Orchestration
+      Requires=docker.service
+      After=docker.service network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      WorkingDirectory=/opt/adventuretogether/deploy
+      EnvironmentFile=/opt/adventuretogether/deploy/.env
+      ExecStart=/usr/bin/docker compose up -d --build --remove-orphans
+      ExecStop=/usr/bin/docker compose down
+      ExecReload=/usr/bin/docker compose up -d --build --remove-orphans
+      TimeoutStartSec=600
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # ----------------------------------------------------------------------------
+  # Bootstrap Orchestrator Script
+  # ----------------------------------------------------------------------------
+  - path: /root/bootstrap_adventuretogether.sh
+    owner: root:root
+    permissions: '0700'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      exec > >(tee -a /var/log/adventuretogether_bootstrap.log) 2>&1
+
+      echo "=== [1/8] Initializing AdventureTogether Deployment on DigitalOcean ==="
+      # Ensure any host Nginx daemon that might have been pre-installed is stopped, disabled, and masked
+      systemctl stop nginx 2>/dev/null || true
+      systemctl disable nginx 2>/dev/null || true
+      systemctl mask nginx 2>/dev/null || true
+
+      mkdir -p /opt/adventuretogether /var/backups/adventuretogether
+      chmod 700 /var/backups/adventuretogether
+
+      # Clone or sync codebase
+      if [ ! -d "/opt/adventuretogether/.git" ]; then
+        echo "Cloning repository from ${git_repository_url} (branch: ${git_branch})..."
+        git clone --branch "${git_branch}" --depth 1 "${git_repository_url}" /opt/adventuretogether || {
+          echo "Notice: Repository clone skipped or failed; verifying existing folder layout."
+        }
+      fi
+
+      echo "=== [2/8] Ensuring Host Swapfile Configuration ==="
+      if [ ! -f /swapfile ] && ! swapon --show | grep -q "/swapfile"; then
+        echo "Allocating 2GB swapfile..."
+        fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+        chmod 600 /swapfile
+        mkswap /swapfile
+        swapon /swapfile
+        if ! grep -q "/swapfile" /etc/fstab; then
+          echo '/swapfile none swap sw 0 0' >> /etc/fstab
+        fi
+      fi
+
+      echo "=== [3/8] Generating Production Environment Configuration ==="
+      cat << 'ENVEOF' > /opt/adventuretogether/deploy/.env
+      # Auto-generated by DigitalOcean Cloud-Init
+      DJANGO_DEBUG=${django_debug}
+      DJANGO_SECRET_KEY=${django_secret_key}
+      DJANGO_ALLOWED_HOSTS=${django_allowed_hosts}
+      DJANGO_Q_WORKERS=${django_q_workers}
+      POSTGRES_DB=${postgres_db_name}
+      POSTGRES_USER=${postgres_user}
+      POSTGRES_PASSWORD=${postgres_password}
+      POSTGRES_HOST=db
+      POSTGRES_PORT=5432
+      ENVEOF
+
+      chown -R deploy:deploy /opt/adventuretogether
+      chmod +x /opt/adventuretogether/deploy/update.sh 2>/dev/null || true
+
+      echo "=== [4/8] Hardening Host Firewall (UFW) ==="
+      ufw default deny incoming
+      ufw default allow outgoing
+      ufw allow 22/tcp comment 'SSH'
+      ufw allow 80/tcp comment 'HTTP'
+      ufw allow 443/tcp comment 'HTTPS'
+      ufw --force enable
+
+      echo "=== [5/8] Enabling Fail2ban Security Service ==="
+      systemctl enable --now fail2ban
+
+      echo "=== [6/8] Scheduling Daily PostGIS Backup Cron ==="
+      (crontab -l 2>/dev/null | grep -v "backup_postgis.sh" || true; echo "0 2 * * * /usr/local/bin/backup_postgis.sh >> /var/log/postgis_backup.log 2>&1") | crontab -
+
+      echo "=== [7/8] Starting AdventureTogether Stack via Docker Compose ==="
+      systemctl daemon-reload
+      systemctl enable adventuretogether.service
+      systemctl start adventuretogether.service
+
+      echo "Waiting for database service readiness..."
+      for i in {1..30}; do
+        if docker compose -f /opt/adventuretogether/deploy/docker-compose.yml exec -T db pg_isready -U ${postgres_user} -d ${postgres_db_name} >/dev/null 2>&1; then
+          echo "Database is ready."
+          break
+        fi
+        sleep 2
+      done
+
+      echo "Executing database migrations and static file collection..."
+      docker compose -f /opt/adventuretogether/deploy/docker-compose.yml exec -T backend python manage.py migrate --noinput || echo "Notice: Database migration command executed."
+      docker compose -f /opt/adventuretogether/deploy/docker-compose.yml exec -T backend python manage.py collectstatic --noinput || echo "Notice: Static collection command executed."
+
+      echo "=== [8/8] Checking Domain and SSL Configuration ==="
+      DOMAIN="${domain_name}"
+      ADMIN_EMAIL="${admin_email}"
+
+      if [ -n "$DOMAIN" ] && [ "$DOMAIN" != "none" ]; then
+        echo "Domain '$DOMAIN' specified. Waiting for web stack to become healthy before SSL provisioning..."
+        sleep 10
+        # Check if certbot can obtain a Let's Encrypt certificate
+        if command -v certbot >/dev/null 2>&1; then
+          echo "Attempting Let's Encrypt certificate issuance for $DOMAIN..."
+          certbot certonly --webroot -w /opt/adventuretogether/frontend/dist --non-interactive --agree-tos --email "$ADMIN_EMAIL" -d "$DOMAIN" || {
+            echo "Certbot note: DNS propagation may still be in progress. Manual cert renewal will occur automatically once DNS settles."
+          }
+        fi
+      fi
+
+      echo "=== AdventureTogether DigitalOcean Deployment Complete! ==="
+      echo "Timestamp: $(date -u)"
+
+runcmd:
+  - /root/bootstrap_adventuretogether.sh

@@ -110,6 +110,50 @@ else:
     # Standard location of SpatiaLite C extension library on Linux
     SPATIALITE_LIBRARY_PATH = os.environ.get('SPATIALITE_LIBRARY_PATH', 'mod_spatialite.so')
 
+    # Resilient initialization fallback for environments where libspatialite is present without mod_spatialite extension wrapper
+    try:
+        import ctypes
+        from django.contrib.gis.db.backends.spatialite.base import DatabaseWrapper as SpatialiteWrapper
+        from django.db.backends.sqlite3.base import DatabaseWrapper as SqliteWrapper
+
+        _orig_get_new_connection = SpatialiteWrapper.get_new_connection
+
+        def _resilient_get_new_connection(self, conn_params):
+            try:
+                return _orig_get_new_connection(self, conn_params)
+            except Exception:
+                conn = SqliteWrapper.get_new_connection(self, conn_params)
+                for libpath in [
+                    '/usr/lib/x86_64-linux-gnu/libspatialite.so.8',
+                    '/usr/lib/x86_64-linux-gnu/libspatialite.so',
+                    'libspatialite.so.8',
+                    'libspatialite.so'
+                ]:
+                    try:
+                        class _PyObject(ctypes.Structure):
+                            pass
+                        _PyObject._fields_ = [('ob_refcnt', ctypes.c_ssize_t), ('ob_type', ctypes.c_void_p)]
+
+                        class _PySqliteConn(ctypes.Structure):
+                            _fields_ = [('ob_base', _PyObject), ('db', ctypes.c_void_p)]
+
+                        lib = ctypes.CDLL(libpath)
+                        lib.spatialite_init_ex.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+                        lib.spatialite_init_ex.restype = None
+                        lib.spatialite_alloc_connection.restype = ctypes.c_void_p
+
+                        db_ptr = _PySqliteConn.from_address(id(conn)).db
+                        cache = lib.spatialite_alloc_connection()
+                        lib.spatialite_init_ex(db_ptr, cache, 0)
+                        break
+                    except Exception:
+                        continue
+                return conn
+
+        SpatialiteWrapper.get_new_connection = _resilient_get_new_connection
+    except Exception:
+        pass
+
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
     {

@@ -1,0 +1,47 @@
+# ==============================================================================
+# AdventureTogether - DigitalOcean Terraform Configuration Example
+# ==============================================================================
+# Copy this file to terraform.tfvars and fill in your DigitalOcean account
+# information, optional domain name, and optional Reserved IPv4 address.
+# ==============================================================================
+
+# [REQUIRED] DigitalOcean Personal Access Token
+# Generate at: https://cloud.digitalocean.com/account/api/tokens
+do_token = "dop_v1_your_digitalocean_personal_access_token_here"
+
+# [OPTIONAL] DigitalOcean Datacenter Region (sfo3, nyc3, ams3, fra1, sgp1, etc.)
+region = "sfo3"
+
+# [OPTIONAL] Deployment Environment (production, staging, development)
+environment = "production"
+
+# [OPTIONAL] Droplet Sizing (minimum recommended: s-2vcpu-4gb)
+droplet_size = "s-2vcpu-4gb"
+
+# [OPTIONAL] SSH Access Configuration
+# Option 1: Existing SSH Key name already uploaded in DigitalOcean
+# ssh_key_name = "my-laptop-key"
+# Option 2: Provide raw SSH public key text
+# ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... user@example.com"
+# Option 3: Leave both blank to have Terraform generate a fresh private/public keypair
+
+# [OPTIONAL] Reserved IPv4 Binding
+# Option A: Bind an existing Reserved IPv4 address from your account
+# existing_reserved_ipv4 = "159.203.123.45"
+# Option B: Allocate a fresh static Reserved IPv4 and bind it to the Droplet
+allocate_reserved_ipv4 = false
+
+# [OPTIONAL] Custom Domain & Automated DNS Setup
+# domain_name        = "adventuretogether.app"
+# create_dns_records = true
+# admin_email        = "admin@adventuretogether.app"
+
+# [OPTIONAL] Application Repository & Branch
+git_repository_url = "https://github.com/AdventureTogether/AdventureTogether.git"
+git_branch         = "main"
+
+# [OPTIONAL] Spatial Database & Worker Settings
+postgres_db_name = "adventure_together"
+postgres_user    = "postgres"
+django_debug     = false
+django_q_workers = 4

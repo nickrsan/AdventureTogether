@@ -73,8 +73,17 @@ The playbooks in `deploy/ansible/` configure an Ubuntu/Debian server from scratc
 ### Running Ansible Playbook
 ```bash
 cd deploy/ansible
+# Full initial provisioning and application deployment
 ansible-playbook -i inventory.ini playbook.yml
+
+# Zero-downtime rolling update with Django database migrations
+ansible-playbook -i inventory.ini update.yml
 ```
+
+### Application Updates & Database Migrations (Zero Data Loss)
+To update running production containers and apply Django database migrations without resetting PostGIS data:
+- **Local Runner**: `./deploy/digitalocean/scripts/update.sh`
+- **Remote On-Droplet Runner**: `/opt/adventuretogether/deploy/update.sh --branch main`
 
 ### Automated Backup & Disaster Recovery
 - **Daily Cron Backup**: Runs at 02:00 UTC, outputting to `/var/backups/adventuretogether/postgis_backup_<timestamp>.sql.gz`.
@@ -82,4 +91,23 @@ ansible-playbook -i inventory.ini playbook.yml
 - **Restore Command**:
 ```bash
 gunzip < /var/backups/adventuretogether/postgis_backup_<timestamp>.sql.gz | docker exec -i adventure_together_db psql -U postgres -d adventure_together
+```
+
+---
+
+## 5. DigitalOcean Automated Cloud Infrastructure (Terraform / App Platform)
+
+For automated cloud provisioning on DigitalOcean from zero to fully deployed with optional Reserved IPv4 and custom domain SSL:
+
+### One-Touch CLI Deployer
+```bash
+./deploy/digitalocean/scripts/deploy.sh --token "<DO_API_TOKEN>" --domain "adventure.example.com" --ip "<OPTIONAL_RESERVED_IP>"
+```
+
+### Terraform / OpenTofu Infrastructure as Code
+See [`deploy/digitalocean/terraform/`](../deploy/digitalocean/terraform/) and the comprehensive [DigitalOcean Deployment Guide](digitalocean_deployment.md).
+
+### DigitalOcean App Platform (Serverless)
+```bash
+doctl apps create --spec deploy/digitalocean/app-platform/app.yaml
 ```

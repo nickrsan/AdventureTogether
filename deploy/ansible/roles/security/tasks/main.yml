@@ -1,5 +1,14 @@
 ---
 # Security & Firewall Hardening Role
+- name: Ensure host Nginx daemon is stopped and disabled to prevent port 80/443 conflict
+  systemd:
+    name: nginx
+    state: stopped
+    enabled: no
+    masked: yes
+  failed_when: false
+  ignore_errors: true
+
 - name: Configure UFW default incoming policy to deny
   ufw:
     direction: incoming

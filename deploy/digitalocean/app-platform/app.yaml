@@ -1,0 +1,132 @@
+# ==============================================================================
+# AdventureTogether - DigitalOcean App Platform Specification (App Spec YAML)
+# ==============================================================================
+# Declarative application specification (equivalent to AWS CloudFormation / ECS
+# task definitions) for deploying AdventureTogether on DigitalOcean App Platform.
+# Deploy with: doctl apps create --spec deploy/digitalocean/app-platform/app.yaml
+# ==============================================================================
+
+name: adventuretogether
+region: nyc
+
+# ------------------------------------------------------------------------------
+# Managed Database (PostgreSQL + PostGIS)
+# ------------------------------------------------------------------------------
+databases:
+  - name: db
+    engine: PG
+    version: "16"
+    production: false
+    num_nodes: 1
+    size: db-s-1vcpu-1gb
+
+# ------------------------------------------------------------------------------
+# Backend API Web Service (Django + GeoDjango)
+# ------------------------------------------------------------------------------
+services:
+  - name: backend
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    http_port: 8000
+    dockerfile_path: backend/Dockerfile
+    source_dir: backend
+    github:
+      branch: main
+      deploy_on_push: true
+      repo: AdventureTogether/AdventureTogether
+    routes:
+      - path: /api
+      - path: /admin
+      - path: /static
+    envs:
+      - key: DJANGO_DEBUG
+        scope: RUN_TIME
+        value: "False"
+      - key: DJANGO_SECRET_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: "generate-production-secret-key-at-deploy"
+      - key: DJANGO_ALLOWED_HOSTS
+        scope: RUN_TIME
+        value: "*"
+      - key: POSTGRES_DB
+        scope: RUN_TIME
+        value: ${db.DATABASE}
+      - key: POSTGRES_USER
+        scope: RUN_TIME
+        value: ${db.USERNAME}
+      - key: POSTGRES_PASSWORD
+        scope: RUN_TIME
+        type: SECRET
+        value: ${db.PASSWORD}
+      - key: POSTGRES_HOST
+        scope: RUN_TIME
+        value: ${db.HOSTNAME}
+      - key: POSTGRES_PORT
+        scope: RUN_TIME
+        value: ${db.PORT}
+    health_check:
+      http_path: /api/health/
+      initial_delay_seconds: 20
+      period_seconds: 10
+      timeout_seconds: 5
+      failure_threshold: 3
+
+  # ----------------------------------------------------------------------------
+  # Frontend Web Client (Vue 3 Single Page Application)
+  # ----------------------------------------------------------------------------
+  - name: frontend
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    http_port: 80
+    dockerfile_path: frontend/Dockerfile
+    source_dir: frontend
+    github:
+      branch: main
+      deploy_on_push: true
+      repo: AdventureTogether/AdventureTogether
+    routes:
+      - path: /
+    envs:
+      - key: VITE_API_BASE_URL
+        scope: BUILD_TIME
+        value: "/api"
+
+# ------------------------------------------------------------------------------
+# Background Harvester Worker (Django-Q2 ORM Task Cluster)
+# ------------------------------------------------------------------------------
+workers:
+  - name: worker
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    dockerfile_path: backend/Dockerfile
+    source_dir: backend
+    run_command: python manage.py qcluster
+    github:
+      branch: main
+      deploy_on_push: true
+      repo: AdventureTogether/AdventureTogether
+    envs:
+      - key: DJANGO_DEBUG
+        scope: RUN_TIME
+        value: "False"
+      - key: DJANGO_SECRET_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: "generate-production-secret-key-at-deploy"
+      - key: POSTGRES_DB
+        scope: RUN_TIME
+        value: ${db.DATABASE}
+      - key: POSTGRES_USER
+        scope: RUN_TIME
+        value: ${db.USERNAME}
+      - key: POSTGRES_PASSWORD
+        scope: RUN_TIME
+        type: SECRET
+        value: ${db.PASSWORD}
+      - key: POSTGRES_HOST
+        scope: RUN_TIME
+        value: ${db.HOSTNAME}
+      - key: POSTGRES_PORT
+        scope: RUN_TIME
+        value: ${db.PORT}

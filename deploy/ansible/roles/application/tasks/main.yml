@@ -1,10 +1,12 @@
 ---
 # Application Docker Deployment & Systemd Service Role
-- name: Install Docker and Docker Compose plugin
+- name: Install Docker and container management dependencies
   apt:
     name:
       - docker.io
       - docker-compose-v2
+      - curl
+      - git
     state: present
 
 - name: Add deploy user to docker group
@@ -12,6 +14,17 @@
     name: deploy
     groups: docker
     append: yes
+
+- name: Ensure project directories exist
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: deploy
+    group: deploy
+    mode: '0755'
+  loop:
+    - "{{ project_root }}"
+    - "{{ project_root }}/deploy"
 
 - name: Copy project code to remote host
   synchronize:
@@ -22,6 +35,40 @@
       - "--exclude=node_modules"
       - "--exclude=.venv"
       - "--exclude=__pycache__"
+      - "--exclude=*.pyc"
+
+- name: Set ownership of project files to deploy user
+  file:
+    path: "{{ project_root }}"
+    owner: deploy
+    group: deploy
+    recurse: yes
+
+- name: Ensure deployment and update scripts have execution permissions
+  file:
+    path: "{{ project_root }}/deploy/update.sh"
+    mode: '0755'
+    owner: deploy
+    group: deploy
+  failed_when: false
+
+- name: Template production environment configuration file (.env)
+  copy:
+    dest: "{{ project_root }}/deploy/.env"
+    content: |
+      # Production environment configuration managed by Ansible
+      DJANGO_DEBUG={{ django_debug | default('False') }}
+      DJANGO_SECRET_KEY={{ django_secret_key | default('prod-django-secret-key-change-in-vault') }}
+      DJANGO_ALLOWED_HOSTS={{ app_domain | default('localhost') }},localhost,127.0.0.1,{{ ansible_host | default('') }},*
+      DJANGO_Q_WORKERS={{ django_q_workers | default(4) }}
+      POSTGRES_DB={{ postgres_db | default('adventure_together') }}
+      POSTGRES_USER={{ postgres_user | default('postgres') }}
+      POSTGRES_PASSWORD={{ postgres_password | default('postgres') }}
+      POSTGRES_HOST=db
+      POSTGRES_PORT=5432
+    owner: deploy
+    group: deploy
+    mode: '0600'
 
 - name: Create production systemd service for AdventureTogether Docker Compose
   copy:
@@ -30,15 +77,18 @@
       [Unit]
       Description=AdventureTogether Docker Compose Application
       Requires=docker.service
-      After=docker.service
+      After=docker.service network-online.target
+      Wants=network-online.target
 
       [Service]
       Type=oneshot
       RemainAfterExit=yes
       WorkingDirectory={{ project_root }}/deploy
-      ExecStart=/usr/bin/docker compose up -d --build
+      EnvironmentFile={{ project_root }}/deploy/.env
+      ExecStart=/usr/bin/docker compose up -d --build --remove-orphans
       ExecStop=/usr/bin/docker compose down
-      User=root
+      ExecReload=/usr/bin/docker compose up -d --build --remove-orphans
+      TimeoutStartSec=600
 
       [Install]
       WantedBy=multi-user.target
@@ -53,3 +103,32 @@
     name: adventuretogether
     enabled: yes
     state: started
+
+- name: Wait for PostgreSQL database container to become healthy
+  command: docker compose -f {{ project_root }}/deploy/docker-compose.yml exec -T db pg_isready -U {{ postgres_user | default('postgres') }} -d {{ postgres_db | default('adventure_together') }}
+  register: db_ready
+  until: db_ready.rc == 0
+  retries: 30
+  delay: 2
+  changed_when: false
+
+- name: Execute Django database migrations
+  command: docker compose -f {{ project_root }}/deploy/docker-compose.yml exec -T backend python manage.py migrate --noinput
+  register: migrate_result
+  changed_when: "'No migrations to apply' not in migrate_result.stdout"
+
+- name: Collect Django static files
+  command: docker compose -f {{ project_root }}/deploy/docker-compose.yml exec -T backend python manage.py collectstatic --noinput
+  register: collectstatic_result
+  changed_when: false
+
+- name: Verify application health check endpoint
+  uri:
+    url: "http://127.0.0.1/api/health/"
+    status_code: 200
+  register: health_check
+  until: health_check.status == 200
+  retries: 15
+  delay: 2
+  when: ansible_connection != 'local' or not lookup('env', 'CI')
+  ignore_errors: yes

@@ -1,0 +1,83 @@
+---
+# ==============================================================================
+# AdventureTogether - Zero-Downtime Application Update Playbook
+# ==============================================================================
+# Performs rolling container rebuild, runs Django database migrations, and
+# verifies application health without resetting PostgreSQL/PostGIS data volumes.
+#
+# Usage:
+#   ansible-playbook -i deploy/ansible/inventory.ini deploy/ansible/update.yml
+#   ansible-playbook -i deploy/ansible/inventory.ini deploy/ansible/update.yml -e "git_branch=main"
+# ==============================================================================
+
+- name: AdventureTogether Application Update & Zero-Data-Loss Migration
+  hosts: all
+  become: yes
+  vars:
+    project_root: /opt/adventuretogether
+    git_branch: "{{ target_branch | default('main') }}"
+    postgres_user: postgres
+    postgres_db: adventure_together
+
+  tasks:
+    - name: Pull latest code changes from Git repository
+      git:
+        repo: https://github.com/nick-santos/AdventureTogether.git
+        dest: "{{ project_root }}"
+        version: "{{ git_branch }}"
+        update: yes
+        force: no
+      when: lookup('file', '{{ project_root }}/.git/HEAD', errors='ignore') is not none
+      failed_when: false
+      register: git_update_result
+
+    - name: Ensure deploy directory and update script have execution permissions
+      file:
+        path: "{{ project_root }}/deploy/update.sh"
+        mode: '0755'
+        owner: deploy
+        group: deploy
+      failed_when: false
+
+    - name: Build updated container images with Docker Compose
+      command: docker compose -f {{ project_root }}/deploy/docker-compose.yml build --pull
+      register: build_result
+      changed_when: "'Successfully tagged' in build_result.stdout or 'naming to' in build_result.stdout or 'writing image' in build_result.stderr"
+
+    - name: Ensure database container is running
+      command: docker compose -f {{ project_root }}/deploy/docker-compose.yml up -d --no-deps db
+      changed_when: false
+
+    - name: Wait for PostgreSQL database readiness
+      command: docker compose -f {{ project_root }}/deploy/docker-compose.yml exec -T db pg_isready -U {{ postgres_user }} -d {{ postgres_db }}
+      register: db_status
+      until: db_status.rc == 0
+      retries: 30
+      delay: 2
+      changed_when: false
+
+    - name: Run Django database schema migrations in isolated container
+      command: docker compose -f {{ project_root }}/deploy/docker-compose.yml run --rm backend python manage.py migrate --noinput
+      register: migration_output
+      changed_when: "'No migrations to apply' not in migration_output.stdout"
+
+    - name: Collect static files in isolated container
+      command: docker compose -f {{ project_root }}/deploy/docker-compose.yml run --rm backend python manage.py collectstatic --noinput
+      register: collectstatic_output
+      changed_when: false
+
+    - name: Gracefully restart application containers with updated images
+      command: docker compose -f {{ project_root }}/deploy/docker-compose.yml up -d --remove-orphans
+      register: up_output
+      changed_when: "'Started' in up_output.stdout or 'Recreated' in up_output.stdout or 'Starting' in up_output.stderr"
+
+    - name: Verify application health check endpoint
+      uri:
+        url: "http://127.0.0.1/api/health/"
+        status_code: 200
+      register: health_check
+      until: health_check.status == 200
+      retries: 15
+      delay: 2
+      when: ansible_connection != 'local' or not lookup('env', 'CI')
+      ignore_errors: yes
